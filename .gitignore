@@ -1,0 +1,10 @@
+.env
+config/targets.yaml
+config/known_hosts
+secrets/*
+!secrets/.gitkeep
+!secrets/tls/
+secrets/tls/*
+!secrets/tls/.gitkeep
+__pycache__/
+*.pyc

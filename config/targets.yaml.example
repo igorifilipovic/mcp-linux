@@ -1,0 +1,21 @@
+defaults:
+  user: ito-linux-monitor
+  port: 22
+  connect_timeout: 8
+  command_timeout: 20
+
+targets:
+  web01:
+    host: 192.168.1.20
+    description: Example web server
+    tags: [linux, web]
+
+  db01:
+    host: db01.example.lan
+    description: Example database server
+    tags: [linux, database]
+    # Optional overrides:
+    # user: ito-linux-monitor
+    # port: 22
+    # connect_timeout: 10
+    # command_timeout: 30
