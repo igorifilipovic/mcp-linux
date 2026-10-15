@@ -221,11 +221,51 @@ def journal_logs(
     return execute(target, " ".join(parts) + " 2>&1", timeout=30)
 
 
+def _tail_stdout(result: dict, lines: int) -> dict:
+    """Trim stdout to the last N lines without adding any remote shell pipeline."""
+    if not isinstance(result, dict) or "stdout" not in result:
+        return result
+
+    stdout = result.get("stdout") or ""
+    split = stdout.splitlines()
+    if len(split) > lines:
+        result = dict(result)
+        result["stdout"] = "\n".join(split[-lines:]) + "\n"
+        result["output_filtered_by_mcp"] = True
+        result["returned_lines"] = lines
+    return result
+
+
 @mcp.tool()
 def kernel_messages(target: str, lines: int = 100) -> dict:
-    """Try to read recent kernel messages as an ordinary user; many hardened systems deny this."""
+    """Read recent kernel messages via one exact sudo-approved dmesg command.
+
+    Target sudoers must allow exactly:
+      /usr/bin/dmesg --color=never
+
+    The line limit is applied inside the MCP after the command returns; it is
+    never interpolated into the privileged command.
+    """
     lines = _bounded(lines, 10, 500, "lines")
-    return execute(target, f"dmesg --ctime 2>&1 | tail -n {lines}")
+    result = execute(target, "sudo -n /usr/bin/dmesg --color=never")
+    return _tail_stdout(result, lines)
+
+
+@mcp.tool()
+def docker_ps(target: str, include_stopped: bool = False) -> dict:
+    """List Docker containers via an exact sudo allowlist.
+
+    The caller cannot supply Docker CLI arguments. The MCP chooses only between
+    these two fixed commands:
+      /usr/bin/docker ps
+      /usr/bin/docker ps -a
+    """
+    command = (
+        "sudo -n /usr/bin/docker ps -a"
+        if include_stopped
+        else "sudo -n /usr/bin/docker ps"
+    )
+    return execute(target, command)
 
 
 @mcp.tool()

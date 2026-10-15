@@ -1,0 +1,13 @@
+# ITO Linux Monitor MCP v2 - optional narrowly-scoped privileged monitoring.
+#
+# IMPORTANT:
+# 1. Verify the real binary paths on the target with:
+#      command -v docker
+#      command -v dmesg
+# 2. If they are not /usr/bin/docker and /usr/bin/dmesg, edit this file.
+# 3. Install with visudo syntax validation, for example:
+#      sudo visudo -f /etc/sudoers.d/ito-linux-monitor
+# 4. Never replace these rules with "docker *" or another wildcard.
+
+Cmnd_Alias ITO_LINUX_MONITOR_READONLY = /usr/bin/docker ps, /usr/bin/docker ps -a, /usr/bin/dmesg --color=never
+ito-linux-monitor ALL=(root) NOPASSWD: ITO_LINUX_MONITOR_READONLY

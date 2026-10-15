@@ -14,7 +14,7 @@ from .tools import mcp
 
 
 async def health(_request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "ito-linux-monitor-mcp"})
+    return JSONResponse({"status": "ok", "service": "ito-linux-monitor-mcp", "version": "2.0.0"})
 
 
 class BearerTokenMiddleware:

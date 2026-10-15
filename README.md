@@ -1,8 +1,8 @@
-# ITO Linux Monitor MCP
+# ITO Linux Monitor MCP v2
 
 Read-only Linux monitoring MCP server designed for remote observability over SSH. It is pinned to the current MCP Python SDK v2.3.0 line.
 
-The server runs in Docker, exposes **Streamable HTTP over HTTPS**, and rejects MCP requests unless the caller sends the configured **Bearer token**. Remote target commands are intentionally limited to monitoring and diagnostics that an ordinary Linux user can run; the server contains **no arbitrary command tool, no sudo, no service restart, no reboot and no file-write tool**.
+The server runs in Docker, exposes **Streamable HTTP over HTTPS**, and rejects MCP requests unless the caller sends the configured **Bearer token**. Most target commands run as the unprivileged `ito-linux-monitor` user. Version 2 adds only three narrowly scoped `sudo` command lines for information that is commonly unavailable to an ordinary user: `docker ps`, `docker ps -a`, and `dmesg --color=never`. There is still **no arbitrary command tool, no general sudo, no service restart, no reboot and no file-write tool**.
 
 ## Architecture
 
@@ -20,7 +20,11 @@ ito-linux-monitor-mcp container
    v
 Linux targets
    user: ito-linux-monitor
-   no sudo / no root privileges
+   ordinary monitoring commands
+   + exact sudo allowlist only for:
+       docker ps
+       docker ps -a
+       dmesg --color=never
 ```
 
 ## Security model
@@ -35,7 +39,9 @@ Linux targets
 - SSH agent discovery and `~/.ssh` key discovery are disabled.
 - SSH server host keys must already exist in `config/known_hosts`; unknown keys are rejected.
 - There is no general-purpose `run_command` MCP tool.
-- All target operations are read-only by design and never prepend `sudo`.
+- Most target operations run without `sudo`.
+- The only privileged tool paths in v2 are hard-coded to `docker ps`, `docker ps -a`, and `dmesg --color=never`; callers cannot provide extra Docker or dmesg arguments.
+- The target user must **not** be added to the `docker` group and must not receive general-purpose sudo rights.
 
 **Important:** root on the Docker host (and a user with unrestricted Docker-daemon access) can ultimately access bind-mounted secrets. Linux permissions can prevent normal host users and other containers from reading the key, but they cannot protect a secret from host root.
 
@@ -59,7 +65,8 @@ Linux targets
 | `service_status` | Read-only `systemctl status` |
 | `failed_services` | Failed systemd units |
 | `journal_logs` | Journal entries the ordinary user is permitted to read |
-| `kernel_messages` | Attempts `dmesg`; hardened targets may correctly deny it |
+| `kernel_messages` | Recent kernel messages via the exact sudo-approved `/usr/bin/dmesg --color=never` command |
+| `docker_ps` | Running containers (`docker ps`) or all containers (`docker ps -a`) via exact sudo-approved commands |
 | `hardware_sensors` | `sensors` if installed plus readable thermal sysfs values |
 
 ### Expected ordinary-user limitations
@@ -67,7 +74,8 @@ Linux targets
 The server intentionally does not bypass OS permissions. Depending on the target's distro/hardening:
 
 - `journalctl` may show only the monitoring user's journal or a limited system journal.
-- `dmesg` may return `Operation not permitted` when `kernel.dmesg_restrict=1`.
+- `kernel_messages` requires the v2 sudoers rule; without it the command is rejected by `sudo -n`.
+- `docker_ps` requires Docker plus the v2 sudoers rules; the monitoring user is intentionally **not** placed in the `docker` group.
 - process details for other users may be restricted by `/proc` mount options.
 - some socket/process ownership fields are hidden from non-root users.
 - `iostat` requires the `sysstat` package to be installed, but does **not** require root to run.
@@ -157,7 +165,7 @@ To display the bearer token later:
 
 # 3. Create the target-side monitoring user
 
-This is a **one-time provisioning step** performed by an administrator on each target. The MCP itself never receives root access.
+This is a **one-time provisioning step** performed by an administrator on each target. The MCP receives no general root shell or general-purpose sudo access.
 
 Example on a target:
 
@@ -193,7 +201,7 @@ sudo chown ito-linux-monitor:ito-linux-monitor \
 sudo chmod 600 /home/ito-linux-monitor/.ssh/authorized_keys
 ```
 
-Do **not** add `ito-linux-monitor` to sudoers.
+Do **not** add `ito-linux-monitor` to the `docker` group.
 
 For even tighter SSH exposure, you may prepend a source IP restriction to the key, for example:
 
@@ -202,6 +210,66 @@ from="192.168.1.50",restrict ssh-ed25519 AAAA...
 ```
 
 where `192.168.1.50` is the MCP server's source IP as seen by the target.
+
+## 3.1 Add the v2 exact sudo allowlist
+
+First verify the actual binary paths on the target:
+
+```bash
+command -v docker
+command -v dmesg
+```
+
+The supplied template assumes:
+
+```text
+/usr/bin/docker
+/usr/bin/dmesg
+```
+
+Open a dedicated sudoers file:
+
+```bash
+sudo visudo -f /etc/sudoers.d/ito-linux-monitor
+```
+
+and add:
+
+```sudoers
+Cmnd_Alias ITO_LINUX_MONITOR_READONLY = /usr/bin/docker ps, /usr/bin/docker ps -a, /usr/bin/dmesg --color=never
+ito-linux-monitor ALL=(root) NOPASSWD: ITO_LINUX_MONITOR_READONLY
+```
+
+The same text is included as:
+
+```text
+target-setup/ito-linux-monitor.sudoers.example
+```
+
+If `command -v` reports different paths, use those exact paths in both sudoers and `app/tools.py`. Do not use wildcards such as `/usr/bin/docker *`. On targets that do not run Docker, simply omit the two Docker entries and keep only the dmesg rule.
+
+Validate the resulting policy:
+
+```bash
+sudo visudo -c
+sudo -l -U ito-linux-monitor
+```
+
+Then test as the monitoring user:
+
+```bash
+sudo -u ito-linux-monitor sudo -n /usr/bin/docker ps
+sudo -u ito-linux-monitor sudo -n /usr/bin/docker ps -a
+sudo -u ito-linux-monitor sudo -n /usr/bin/dmesg --color=never | head
+```
+
+These examples must be rejected:
+
+```bash
+sudo -u ito-linux-monitor sudo -n /usr/bin/docker inspect anything
+sudo -u ito-linux-monitor sudo -n /usr/bin/docker run --rm alpine id
+sudo -u ito-linux-monitor sudo -n /bin/bash
+```
 
 # 4. Build and capture target SSH host keys
 
@@ -310,6 +378,9 @@ cpu_status(target="app01")
 memory_swap(target="app01")
 processes(target="app01", sort_by="cpu", limit=30)
 journal_logs(target="app01", lines=100, since_minutes=60)
+kernel_messages(target="app01", lines=100)
+docker_ps(target="app01")
+docker_ps(target="app01", include_stopped=true)
 ```
 
 # 8. Adding another target
@@ -326,7 +397,11 @@ The MCP server re-reads `targets.yaml` on each call, so target inventory changes
 
 ## Why no arbitrary command tool?
 
-The purpose of this server is monitoring. A generic shell tool would turn an otherwise read-only monitoring service into a remote administration surface. This implementation exposes fixed diagnostic operations and validates the small number of arguments that become part of shell commands.
+The purpose of this server is monitoring. A generic shell tool would turn an otherwise read-only monitoring service into a remote administration surface. This implementation exposes fixed diagnostic operations and validates the small number of arguments that become part of shell commands. The v2 Docker and dmesg tools also use fixed command lines; the requester cannot append arbitrary privileged arguments.
+
+## Why limited sudo instead of the Docker group?
+
+Membership in the rootful Docker daemon's `docker` group is effectively a high-privilege capability. Version 2 deliberately avoids that. The monitoring account receives only three exact NOPASSWD command lines through sudoers. This is much narrower than general Docker access and much simpler operationally than installing a separate socket proxy on every target.
 
 ## Why strict `known_hosts`?
 
@@ -351,6 +426,9 @@ Dockerfile
 compose.yaml
 app/
 scripts/
+target-setup/ito-linux-monitor.sudoers.example
+VERSION
+CHANGELOG.md
 README.md
 ```
 
